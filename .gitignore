@@ -9,6 +9,7 @@ backup/
 *.rmdoc
 *.pdf
 *.svg
+!assets/*.svg
 *.png
 *.zip
 *.tar.gz
