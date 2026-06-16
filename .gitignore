@@ -1,0 +1,18 @@
+# Geheimnis: Device-Token niemals committen!
+.rmapi.conf
+
+# Werkzeuge / generierte Artefakte
+.venv/
+bin/rmapi
+.validation/
+backup/
+*.rmdoc
+*.pdf
+*.svg
+*.png
+*.zip
+*.tar.gz
+chrome-profile/
+__pycache__/
+*.pyc
+.DS_Store

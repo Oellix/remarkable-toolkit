@@ -1,0 +1,79 @@
+---
+name: remarkable
+description: >-
+  Send files, web articles, or Markdown to the user's reMarkable tablet, and
+  pull / back up / export documents and handwritten notes from it. Use whenever
+  the user wants to put something on their reMarkable, get notes or PDFs off the
+  device, render handwriting to PDF, or back up the cloud.
+---
+
+<!-- Template: setup.sh ersetzt @@RM_HOME@@ durch den echten Pfad und schreibt
+     die fertige Skill nach ~/.claude/skills/remarkable/SKILL.md. -->
+
+# reMarkable senden & abziehen
+
+Toolkit zum Senden beliebiger Inhalte an die reMarkable-Cloud und zum Abziehen
+von Dokumenten/Notizen. Engine: `rmapi` (Cloud-API, sync15) + Headless-Chrome
+(HTML→PDF) + `rmc`/`rmscene` (Handschrift-Rendering). Läuft auf macOS & Linux,
+für jedes reMarkable-Modell (rM1/2, Paper Pro, Paper Pro Move).
+
+## Wichtig: immer mit dem venv-Python aufrufen
+
+Alle Skripte brauchen das projekt-lokale venv (markdown, trafilatura, rmscene):
+
+```
+PY=@@RM_HOME@@/.venv/bin/python
+S=@@RM_HOME@@/scripts
+```
+
+## Senden — `send.py`
+
+```
+$PY $S/send.py <DATEI-oder-URL> [--name "Anzeigename"] [--dest /Cloud-Ordner]
+```
+
+- **PDF / EPUB** → werden direkt hochgeladen (Passthrough).
+- **.md / .markdown / .txt** → Markdown wird zu einem **bildschirmoptimierten PDF**
+  gerendert (farbige Code-Highlights). Seitenformat passt per Default zum 7,3″-Move;
+  für größere Modelle `RM_PAGE_SIZE` setzen (z. B. `RM_PAGE_SIZE="157mm 210mm"`).
+- **http(s)-URL** → Artikel wird extrahiert (trafilatura) → Markdown → PDF.
+
+Beispiele:
+```
+$PY $S/send.py ~/Downloads/paper.pdf
+$PY $S/send.py notizen.md --dest /Lesestoff
+$PY $S/send.py "https://example.com/artikel" --name "Mein Artikel"
+```
+
+## Abziehen — `pull.py`
+
+```
+$PY $S/pull.py list [PFAD]                     # Cloud-Inhalt auflisten
+$PY $S/pull.py get "Dokumentname" -o ./        # ein Dokument als .rmdoc holen
+$PY $S/pull.py backup [ZIELDIR]                # ALLES rekursiv sichern
+$PY $S/pull.py render "Notizbuch" -o note.pdf  # Notizbuch → PDF (Handschrift als Bild)
+```
+
+## Authentifizierung (falls Token fehlt/abgelaufen)
+
+Das Device-Token liegt in `@@RM_HOME@@/.rmapi.conf`. Fehlt es oder schlägt ein
+Aufruf mit Auth-Fehler fehl:
+1. Nutzer öffnet **https://my.remarkable.com/device/browser/connect** und kopiert
+   den 8-Zeichen-Einmal-Code.
+2. Dann (Code wird einmalig per stdin übergeben):
+   ```
+   echo "<CODE>" | RMAPI_CONFIG=@@RM_HOME@@/.rmapi.conf \
+     @@RM_HOME@@/bin/rmapi ls
+   ```
+
+## Bekannte Grenzen
+
+- reMarkable nimmt nativ nur **PDF/EPUB** an → alles andere wird vorher zu PDF
+  konvertiert (Office/Bilder sind aktuell nicht eingebaut).
+- **Handschrift** wird als **Bild** wiedergegeben (kein Text/OCR). Bei neuen
+  Farbgeräten (Paper Pro / Move) kann **Farbe fehlen** oder eine Seite **nicht
+  rendern**, solange `rmscene` neue Blocktypen nicht abdeckt (`render` meldet
+  übersprungene Seiten). Abhilfe: `@@RM_HOME@@/.venv/bin/pip install -U rmc rmscene`.
+- **Free-Tier:** Ohne „Connect"-Abo synct die Cloud nur kürzlich bearbeitete
+  Notizbücher (~50 Tage). Ältere sind nur lokal → via USB/SSH erreichbar.
+- Geräte-Token in `.rmapi.conf` ist ein Geheimnis (steht in `.gitignore`).
