@@ -17,11 +17,10 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
-import subprocess
 import sys
 import tempfile
 
-import rmlib
+import rmlib  # noqa: E402  (Projekt-lokaler Import; via PYTHONPATH=scripts)
 
 PASSTHROUGH = {".pdf", ".epub"}
 MARKDOWN_EXT = {".md", ".markdown", ".txt"}
@@ -29,23 +28,40 @@ MARKDOWN_EXT = {".md", ".markdown", ".txt"}
 
 def ensure_dest(dest: str) -> None:
     """Legt den Cloud-Zielordner an — auch verschachtelt (/A/B/C), Segment für Segment.
-    mkdir auf bereits existierende Ordner schlägt fehl; das ist erwartet und unschädlich."""
+    mkdir auf bereits existierende Ordner schlägt fehl; das ist erwartet und unschädlich.
+
+    Confinement (P2): Jeder ZU ERZEUGENDE Pfad läuft über rmlib.rmapi_write →
+    guard_write, es entsteht also nur AT-OR-BELOW RM_ALLOWED_PREFIX ein Ordner.
+    Ein Segment, das ein ECHTER VORFAHR der Confinement-Basis ist (z. B. '/HERMES'
+    bei Basis '/HERMES/Sub'), wird ÜBERSPRUNGEN — nicht erzeugt und kein raise,
+    da der Mensch/das Token diesen übergeordneten Ordner schon besitzt."""
+    base = rmlib._guard_base()      # None bei Sentinel ALL, sonst normalisierte Basis
     path = ""
     for part in [p for p in dest.strip("/").split("/") if p]:
         path += "/" + part
-        subprocess.run([rmlib.RMAPI, "mkdir", path], env=rmlib.rm_env(),
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # Echten Vorfahr der Basis NICHT anlegen (base.startswith(path + "/")),
+        # die Prüfung läuft VOR guard_write — sonst würde guard_write hier raisen.
+        if base is not None and base.startswith(path + "/"):
+            continue
+        # mkdir auf existierende Ordner schlägt fehl → bewusst geschluckt
+        # (rc≠0 ist hier kein Fehler). guard_write (im Chokepoint) prüft den Pfad.
+        rmlib.rmapi_write("mkdir", cloud_paths=[path])
 
 
 def upload(path: str, dest: str) -> int:
-    rmlib.require(rmlib.RMAPI, "Erst 'bash scripts/setup.sh' ausführen.")
-    cmd = [rmlib.RMAPI, "put", path]
-    if dest and dest != "/":
-        ensure_dest(dest)
-        cmd.append(dest)
-    # JSON-Modus: rmapi-"put"-Chatter ("uploading: … OK") vom JSON-Kanal fernhalten.
-    out = sys.stderr if rmlib.json_mode() else None
-    return subprocess.run(cmd, env=rmlib.rm_env(), stdout=out).returncode
+    # Confinement (P2): Das Cloud-Ziel wird IMMER geguarded — auch bei dest "/".
+    # Unter Confinement raised guard_write('/') (= außerhalb des Prefix), sodass
+    # ein Default-Root-Upload NICHT mehr am Guard vorbeischlüpft. Nur die LOKALE
+    # Datei (path) geht ungeguarded an rmapi (local_first). Der geguardete
+    # Rückgabewert ist der EINZIGE Cloud-String an rmapi (C1).
+    norm_dest = rmlib._norm_cloud_path(dest or "/")
+    if norm_dest == "/":
+        # Wurzel-Upload: guard_write('/') erzwingen (ALL erlaubt, Confinement
+        # lehnt ab) — danach kein remote-Argument an 'put' anhängen.
+        rmlib.guard_write("/")
+        return rmlib.rmapi_write("put", local_first=path)
+    ensure_dest(norm_dest)
+    return rmlib.rmapi_write("put", local_first=path, cloud_paths=[norm_dest])
 
 
 def main(argv: list[str]) -> int:

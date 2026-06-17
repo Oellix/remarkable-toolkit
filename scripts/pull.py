@@ -27,6 +27,17 @@ import zipfile
 
 import rmlib
 
+# READ-CONFINEMENT (P2 / Review H3 — OFFENE ENTSCHEIDUNG):
+# pull.py ist bewusst READ-ONLY und läuft daher OHNE guard_write. Das heißt
+# aber: 'backup' (mget /) und 'get'/'render'/'list' sehen den GANZEN Account,
+# nicht nur den Schreib-Prefix eines Agenten (RM_ALLOWED_PREFIX). Für den
+# Tom-Rollout ist NOCH NICHT entschieden, ob Lesen ebenfalls auf einen Prefix
+# beschränkt werden soll (z. B. nur '/HERMES' listen/sichern). reMarkable-
+# Device-Tokens sind nicht ordner-scopebar, ein Read-Confinement müsste also
+# — analog zum Write-Guard — clientseitig in diesen Befehlen erzwungen werden
+# (z. B. Pfad-Prefix-Filter auf list/get, prefix-beschränktes mget). Bis diese
+# Entscheidung fällt, bleibt Lesen voller-Account-Scope. Schreiben/Löschen ist
+# über rmlib.guard_write (send.py) bereits confined.
 AUTH_HINT = "  (Fehlgeschlagen — Token abgelaufen? Neu anmelden, siehe SKILL.md)"
 COLOR_NOTE = "Handschrift als Bild (kein Text); Farbe evtl. nicht enthalten."
 _TYPE_MAP = {"DocumentType": "document", "CollectionType": "collection"}

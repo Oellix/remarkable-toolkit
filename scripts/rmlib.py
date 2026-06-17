@@ -119,8 +119,159 @@ hr {{ border: none; border-top: 1px solid #ccc; margin: 9px 0; }}
 
 
 def rm_env() -> dict:
-    """Umgebung für rmapi-Aufrufe (zeigt auf das projekt-lokale Token)."""
-    return dict(os.environ, RMAPI_CONFIG=RMAPI_CONFIG)
+    """Umgebung für rmapi-Aufrufe (zeigt auf das Token).
+
+    Per-Agent-Token (P2): Ein extern gesetztes ``RMAPI_CONFIG`` wird RESPEKTIERT
+    (``setdefault``) — so bekommt Tom über seine eigene Env eine eigene
+    ``.rmapi.conf`` und damit ein unabhängig widerrufbares Device-Token. Nur wenn
+    nichts gesetzt ist, fällt es auf das projekt-lokale ``<repo>/.rmapi.conf``
+    zurück (Alex' interaktiver Default)."""
+    env = dict(os.environ)
+    env.setdefault("RMAPI_CONFIG", RMAPI_CONFIG)
+    return env
+
+
+# --- Schreib-Confinement (Guard, P2) ---------------------------------------
+# RM_ALLOWED_PREFIX begrenzt JEDEN mutierenden Cloud-Pfad (put/mkdir/mv/rm/...)
+# auf einen Ordner-Teilbaum. FAIL-CLOSED: unset/"" => DENY. Der einzige Weg zu
+# Vollzugriff ist das Sentinel "ALL" (case-sensitive). Ein Prefix, das zu "/"
+# normalisiert, => DENY (für unbeschränkt explizit ALL nutzen).
+#
+# EHRLICHE GRENZE (M1): Dieser Guard schützt vor VERSEHENTLICHEN
+# out-of-prefix-Writes eines korrekt konfigurierten Wrappers — er hat ~null
+# Adversary-Resistance. Wer das Token (.rmapi.conf) oder das nackte rmapi-Binary
+# erreicht, hat trotzdem Vollzugriff (reMarkable-Device-Tokens sind unscoped).
+# ECHTES Confinement = Per-Agent-Token (eigene .rmapi.conf via RMAPI_CONFIG,
+# chmod 600, NICHT im Agent-CWD) + Tom darf NUR den fixen, geguardeten
+# Wrapper-Befehl aufrufen (Hermes-Tool-Allowlist), niemals raw rmapi/Token.
+RM_ALLOWED_PREFIX_ENV = "RM_ALLOWED_PREFIX"
+_GUARD_SENTINEL_ALL = "ALL"  # case-sensitive: nur exakt "ALL" hebt Confinement auf
+
+# Steuerzeichen sind in keinem legitimen Cloud-Pfad erlaubt — sie könnten
+# Argumente/Logs verfälschen oder rmapi verwirren. Deckt C0 (\x00-\x1f inkl.
+# \n\r\t\0), DEL + C1 (\x7f-\x9f, u. a. NEL U+0085) sowie die Unicode-Line/
+# Paragraph-Separatoren U+2028/U+2029 ab (Log-/Argument-Hygiene, Hardening).
+_CTRL_CHARS_RE = re.compile(r"[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+
+# Alt-Separatoren / Slash-Confusables: Backslash + Unicode-Slash-Look-alikes.
+# reMarkable splittet Cloud-Pfade NUR an '/', daher ist keines dieser Zeichen je
+# ein legitimer Separator — aber sie sind klassische Traversal-/Confusable-
+# Vektoren (z. B. '/HERMES/..\..\evil', '/HERMES/..／evil'), die sonst als EIN
+# Segment am '..'-Check vorbeischlüpfen. Defense-in-Depth: in Schreibpfaden
+# ablehnen. (Betrifft nur Write — pull.py/Read nutzt _norm_cloud_path nicht.)
+_ALT_SEP_RE = re.compile(r"[\\\u2044\u2215\u29f8\uff0f]")
+
+
+def _norm_cloud_path(p: str) -> str:
+    """Normalisiert einen Cloud-Pfad VALUE-AUTHORITATIV, ohne Auflösung.
+
+    * Lehnt '..'-Segmente und Steuerzeichen/Newlines hart ab (raise SystemExit) —
+      niemals stilles Droppen (C1). os.path.normpath wird NICHT benutzt, da es
+      '..' still kollabieren würde.
+    * Kollabiert mehrfache/führende/abschließende Slashes ('//A//B/' -> '/A/B').
+    * Reiner String-Vorgang: keine Symlink-/CWD-Auflösung, kein Filesystem.
+
+    Rückgabe ist immer absolut ('/...') bzw. '/' für die Wurzel.
+    """
+    raw = p or ""
+    if _CTRL_CHARS_RE.search(raw):
+        raise SystemExit(
+            "FEHLER: Cloud-Pfad enthält Steuerzeichen/Newlines — abgelehnt.")
+    if _ALT_SEP_RE.search(raw):
+        raise SystemExit(
+            "FEHLER: Cloud-Pfad enthält Backslash/Slash-Confusable — abgelehnt "
+            "(nur '/' ist Separator; Defense-in-Depth gegen Traversal).")
+    segments = [s for s in raw.split("/") if s != ""]
+    for s in segments:
+        if s == "..":
+            raise SystemExit(
+                f"FEHLER: '..'-Segment in Cloud-Pfad '{raw}' — abgelehnt "
+                "(keine Pfad-Traversal).")
+    return "/" + "/".join(segments) if segments else "/"
+
+
+def _guard_base() -> str | None:
+    """Liest RM_ALLOWED_PREFIX zur AUFRUFZEIT (nicht beim Import) und liefert die
+    Confinement-Basis.
+
+    * Sentinel exakt "ALL"  -> None  (kein Confinement, Vollzugriff).
+    * unset oder ""         -> DENY  (raise; fail-closed).
+    * normalisiert zu "/"   -> DENY  (raise; für unbeschränkt ALL nutzen).
+    * sonst                 -> normalisierte Basis (z. B. "/HERMES").
+    """
+    prefix = os.environ.get(RM_ALLOWED_PREFIX_ENV)
+    if prefix == _GUARD_SENTINEL_ALL:
+        return None
+    if not prefix:
+        raise SystemExit(
+            "FEHLER: RM_ALLOWED_PREFIX ist nicht gesetzt — Schreibzugriff "
+            "verweigert (fail-closed).\n"
+            "       → RM_ALLOWED_PREFIX=ALL für Vollzugriff (interaktiv) "
+            "oder einen Ordner (Agent) setzen.")
+    base = _norm_cloud_path(prefix)
+    if base == "/":
+        raise SystemExit(
+            "FEHLER: RM_ALLOWED_PREFIX normalisiert zu '/' (gesamter Account) — "
+            "abgelehnt.\n       → Für unbeschränkten Zugriff RM_ALLOWED_PREFIX=ALL "
+            "nutzen, sonst einen konkreten Ordner.")
+    return base
+
+
+def guard_write(dest: str) -> str:
+    """Erzwingt, dass ``dest`` AT-OR-BELOW RM_ALLOWED_PREFIX liegt und liefert den
+    geprüften, normalisierten Cloud-Pfad zurück.
+
+    Der RÜCKGABEWERT ist value-authoritativ (C1): Aufrufer geben AUSSCHLIESSLICH
+    diesen String an rmapi weiter, niemals das rohe Argument.
+
+    Regeln:
+      * '..'/Steuerzeichen        -> raise (über _norm_cloud_path).
+      * Prefix unset/""           -> raise (fail-closed, über _guard_base).
+      * Sentinel "ALL"            -> kein Confinement: normalisierter dest zurück.
+      * dest == base ODER dest.startswith(base + "/") -> erlaubt.
+        (Substring-Schutz: base '/HERMES' lehnt '/HERMESX' ab, da kein '/'-Grenz.)
+      * sonst                     -> raise (außerhalb des Prefix).
+    """
+    d = _norm_cloud_path(dest or "/")
+    base = _guard_base()
+    if base is None:               # Sentinel ALL → kein Confinement
+        return d
+    if d == base or d.startswith(base + "/"):
+        return d
+    raise SystemExit(
+        f"FEHLER: Schreibziel '{d}' liegt außerhalb von "
+        f"{RM_ALLOWED_PREFIX_ENV}='{base}' — abgelehnt.")
+
+
+def rmapi_write(verb: str, cloud_paths: list[str] | None = None,
+                local_first: str | None = None,
+                extra: list[str] | None = None) -> int:
+    """EINZIGER Chokepoint für MUTIERENDE rmapi-Verben (put/mkdir/mv/rm/restore).
+
+    JEDES Cloud-Pfad-Argument läuft durch ``guard_write()``, BEVOR ein Subprozess
+    startet — und nur der geguardete RÜCKGABEWERT geht an rmapi (C1/C2).
+
+    Args:
+      verb:        rmapi-Verb (z. B. "put", "mkdir", "mv", "rm").
+      cloud_paths: Cloud-Pfade, die geguarded werden. Bei 'mv' BEIDE Pfade.
+      local_first: Bei 'put' die LOKALE Quelldatei — wird NICHT geguarded und
+                   steht als erstes Argument vor dem (geguardeten) Cloud-Ziel.
+      extra:       zusätzliche rohe Flags (z. B. "-coverpage=1"); KEINE Cloud-Pfade.
+
+    Returns: rmapi-Returncode.
+    """
+    require(RMAPI, "Erst 'bash scripts/setup.sh' ausführen.")
+    guarded = [guard_write(p) for p in (cloud_paths or [])]
+    argv = [RMAPI, verb]
+    if extra:
+        argv.extend(extra)
+    if local_first is not None:    # 'put': lokale Datei roh, NICHT guarden
+        argv.append(local_first)
+    argv.extend(guarded)
+    # JSON-Modus: rmapi-Chatter ("uploading/creating … OK") vom JSON-stdout
+    # fernhalten (dort lebt genau ein JSON-Objekt) → nach stderr.
+    out = sys.stderr if _JSON_MODE else None
+    return subprocess.run(argv, env=rm_env(), stdout=out).returncode
 
 
 def find_chrome() -> str:
