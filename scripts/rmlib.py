@@ -10,10 +10,12 @@ da hier markdown/trafilatura/rmscene gebraucht werden.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -22,6 +24,61 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 RMAPI = os.path.join(ROOT, "bin", "rmapi")
 RMAPI_CONFIG = os.path.join(ROOT, ".rmapi.conf")
 RMC = os.path.join(ROOT, ".venv", "bin", "rmc")
+
+# --- Strukturierte Ausgabe (Agent-Vertrag, P1) -----------------------------
+# Im --json-Modus ist stdout GENAU EIN JSON-Objekt; alle Fortschritts- und
+# Diagnosezeilen gehen nach stderr. So kann ein Agent (Claude Code, Tom, Cron)
+# die Rueckgabe maschinell auswerten. Ohne --json bleibt die menschenlesbare
+# Prosa exakt wie bisher. send.py/pull.py reichen diesen Vertrag nur durch.
+AUTH_HINT_URL = "https://my.remarkable.com/device/browser/connect"
+AUTH_HINT_HUMAN = "Token abgelaufen? Neu anmelden — siehe SKILL.md (Connect-Code)."
+
+_JSON_MODE = False
+
+
+def set_json_mode(on: bool) -> None:
+    """Schaltet die strukturierte Ausgabe global fuer diesen Prozess."""
+    global _JSON_MODE
+    _JSON_MODE = bool(on)
+
+
+def json_mode() -> bool:
+    return _JSON_MODE
+
+
+def progress(msg: str) -> None:
+    """Fortschritts-/Diagnosezeile. JSON-Modus → stderr (stdout bleibt reines
+    JSON), sonst → stdout wie bisher."""
+    print(msg, file=sys.stderr if _JSON_MODE else sys.stdout)
+
+
+def emit(result: dict, human: str = "") -> None:
+    """Erfolgs-Resultat ausgeben: im JSON-Modus genau ein JSON-Objekt auf
+    stdout, sonst die menschenlesbare Zeile (falls angegeben)."""
+    if _JSON_MODE:
+        print(json.dumps(result, ensure_ascii=False))
+    elif human:
+        print(human)
+
+
+def fail(error: str, *, hint: str = "", human: str = "", code: int = 1, **extra) -> int:
+    """Fehler strukturiert ausgeben und den Exit-Code zurueckgeben. JSON-Modus →
+    {"ok": false, "error": ...} auf stdout (Bash sieht zusaetzlich den
+    Exit-Code). Sonst → Prosa auf stderr wie bisher. Rueckgabe = code, damit
+    Commands `return rmlib.fail(...)` schreiben koennen."""
+    if _JSON_MODE:
+        obj = {"ok": False, "error": error}
+        if hint:
+            obj["hint"] = hint
+        obj.update(extra)
+        print(json.dumps(obj, ensure_ascii=False))
+    else:
+        line = human or f"FEHLER: {error}"
+        if hint:
+            line += f"\n  {hint}"
+        print(line, file=sys.stderr)
+    return code
+
 
 # Seitenformat des erzeugten PDFs. Default passt zum reMarkable Paper Pro Move
 # (7,3"). Für andere Modelle per Umgebungsvariable überschreiben, z. B.:
