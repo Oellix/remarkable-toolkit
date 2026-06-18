@@ -223,8 +223,23 @@ def _error(req_id, code: int, message: str) -> dict:
     return {"jsonrpc": "2.0", "id": req_id, "error": {"code": code, "message": message}}
 
 
+def _allowed_tools() -> set | None:
+    """Tool-Allowlist aus RM_MCP_TOOLS (kommagetrennt). Leer/unset = ALLE Tools.
+
+    So kann ein Deployment (z. B. Tom/Hermes) den Server auf ein Minimal-Set
+    beschränken — etwa ``RM_MCP_TOOLS=rm_send`` für reinen Egress, ohne die
+    lesenden Voll-Account-Tools (rm_backup/rm_get/...) überhaupt anzubieten.
+    Wirkt in tools/list (Sichtbarkeit) UND tools/call (Durchsetzung)."""
+    raw = os.environ.get("RM_MCP_TOOLS", "").strip()
+    if not raw:
+        return None
+    return {t.strip() for t in raw.split(",") if t.strip()}
+
+
 def _tools_list() -> dict:
-    """tools/list-Result: name/title/description/inputSchema je Tool."""
+    """tools/list-Result: name/title/description/inputSchema je Tool (gefiltert
+    durch RM_MCP_TOOLS, falls gesetzt)."""
+    allowed = _allowed_tools()
     return {
         "tools": [
             {
@@ -234,6 +249,7 @@ def _tools_list() -> dict:
                 "inputSchema": spec["inputSchema"],
             }
             for name, spec in TOOLS.items()
+            if allowed is None or name in allowed
         ]
     }
 
@@ -336,6 +352,12 @@ def handle(message: dict):
         if name not in TOOLS:
             # Unbekanntes Tool → JSON-RPC-Fehler (Methode existiert, Ziel nicht).
             return _error(req_id, _METHOD_NOT_FOUND, f"Unbekanntes Tool: {name!r}")
+        allowed = _allowed_tools()
+        if allowed is not None and name not in allowed:
+            # Per RM_MCP_TOOLS gesperrt (z. B. Tom darf nur rm_send) → Durchsetzung,
+            # nicht nur Verstecken in tools/list.
+            return _error(req_id, _METHOD_NOT_FOUND,
+                          f"Tool nicht freigegeben (RM_MCP_TOOLS): {name!r}")
         try:
             return _result(req_id, _run_tool(name, arguments))
         except Exception as e:  # noqa: BLE001 — Loop darf nie crashen
