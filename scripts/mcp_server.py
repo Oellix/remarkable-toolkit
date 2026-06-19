@@ -57,6 +57,14 @@ _METHOD_NOT_FOUND = -32601
 _INTERNAL_ERROR = -32603
 
 
+def _dbg(msg: str) -> None:
+    """Opt-in stderr-Diagnose (Env RM_MCP_DEBUG=1). Geht NIE auf stdout (dort
+    lebt nur JSON-RPC) — bei Hermes landet stderr in mcp-stderr.log. Default aus.
+    Hilft zu sehen, ob ein Client initialize sendet und ob wir antworten."""
+    if os.environ.get("RM_MCP_DEBUG"):
+        print(f"[mcp_server pid={os.getpid()}] {msg}", file=sys.stderr, flush=True)
+
+
 # --- Tool-Definitionen ------------------------------------------------------
 # Jedes Tool kennt: das Ziel-Skript, eine Funktion die (args-dict) -> argv[]
 # baut (OHNE python/script-Präfix, OHNE --json — das hängt der Dispatcher an),
@@ -375,14 +383,17 @@ def _write(obj: dict) -> None:
     delimited). stdout bleibt reines JSON-RPC."""
     sys.stdout.write(json.dumps(obj, ensure_ascii=False) + "\n")
     sys.stdout.flush()
+    _dbg(f"sent id={obj.get('id')} keys={list(obj.keys())}")
 
 
 def main() -> int:
+    _dbg("gestartet; warte auf erste stdin-Zeile (initialize erwartet)")
     # Zeilenweise von stdin lesen, bis EOF (Pipe-Close → sauberes Ende).
     for line in sys.stdin:
         line = line.strip()
         if not line:
             continue
+        _dbg(f"recv: {line[:160]!r}")
         try:
             message = json.loads(line)
         except ValueError:
@@ -398,6 +409,7 @@ def main() -> int:
             response = _error(message.get("id"), _INTERNAL_ERROR, f"Interner Fehler: {e}")
         if response is not None:
             _write(response)
+    _dbg("stdin EOF; beende")
     return 0
 
 
