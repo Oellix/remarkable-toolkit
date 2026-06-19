@@ -53,13 +53,25 @@ echo <CODE> | RMAPI_CONFIG=$PWD/.rmapi.conf bin/rmapi ls
 
 ## Sending &nbsp;📤
 
+The easiest entrypoint is the `remarkable` wrapper — on your own machine it grants
+full write access automatically (it sets `RM_ALLOWED_PREFIX=ALL` if you haven't
+set one). See **Write confinement** below for why that matters.
+
+```bash
+bin/remarkable send report.pdf                       # PDF / EPUB — sent as-is
+bin/remarkable send notes.md                         # Markdown → screen-optimised PDF
+bin/remarkable send notes.md --dest /Reading         # into a cloud folder (auto-created)
+bin/remarkable send "https://example.com/article" --name "Great read"
+```
+
+Calling `send.py` directly works too, but **writes are fail-closed**: you must
+set `RM_ALLOWED_PREFIX` (a folder, or `ALL` for the whole account) or the upload
+is refused:
+
 ```bash
 PY=.venv/bin/python
-
-$PY scripts/send.py report.pdf                       # PDF / EPUB — sent as-is
-$PY scripts/send.py notes.md                         # Markdown → screen-optimised PDF
-$PY scripts/send.py notes.md --dest /Reading         # into a cloud folder (auto-created)
-$PY scripts/send.py "https://example.com/article" --name "Great read"
+RM_ALLOWED_PREFIX=ALL        $PY scripts/send.py report.pdf            # full access
+RM_ALLOWED_PREFIX=/Reading   $PY scripts/send.py notes.md --dest /Reading   # confined
 ```
 
 | Input | What happens |
@@ -79,12 +91,61 @@ $PY scripts/pull.py backup ./backup                      # recursive backup of e
 $PY scripts/pull.py render "My Notebook" -o note.pdf     # handwriting → PDF
 ```
 
+## MCP &nbsp;🤖
+
+The toolkit also speaks **[Model Context Protocol](https://modelcontextprotocol.io)**
+over stdio, so an MCP client (Claude Code, Hermes/Tom) can drive it directly.
+The server (`scripts/mcp_server.py`) exposes five tools — `rm_list`, `rm_get`,
+`rm_render`, `rm_backup` (read-only) and `rm_send` (write) — each shelling the
+CLI with `--json` and returning the structured result.
+
+A ready `.mcp.json` is checked in for **Claude Code on the trusted local box**:
+
+```jsonc
+// .mcp.json  — Alex's own machine = trusted local
+{ "mcpServers": { "remarkable": {
+  "command": "<repo>/.venv/bin/python",
+  "args": ["scripts/mcp_server.py"],
+  "env": { "RM_ALLOWED_PREFIX": "ALL",          // full write access — local only
+           "RMAPI_CONFIG": "<repo>/.rmapi.conf" }
+}}}
+```
+
+`RM_ALLOWED_PREFIX=ALL` grants full write access **on purpose** here, because
+this is the account owner's machine. For a shared agent (Tom/Hermes) this is the
+**wrong** setting — confine it to a folder and give it its own token. See
+[`docs/mcp-tom.md`](docs/mcp-tom.md) for the confined Hermes wiring and the two
+open prerequisites before that is switched on.
+
+### Write confinement (fail-closed) &nbsp;🔒
+
+Every **mutating** cloud path (upload / `mkdir` / `mv` / `rm`) is gated by the
+`RM_ALLOWED_PREFIX` environment variable:
+
+| `RM_ALLOWED_PREFIX` | Write behaviour |
+|---------------------|-----------------|
+| *unset* or `""` | **refused** (fail-closed) |
+| `ALL` | unrestricted (whole account) |
+| `/Folder` | only at-or-below `/Folder`; anything else refused |
+
+This is a **guardrail against accidental out-of-prefix writes by a correctly
+configured wrapper — not a hardened security boundary.** It has ~no
+adversary-resistance: anyone who reaches `.rmapi.conf` or the raw `bin/rmapi`
+still has full access (reMarkable device tokens are unscoped). Real confinement
+= a per-agent token plus a tool-allowlist that never exposes raw `rmapi`.
+
+**Reads are not confined.** `rm_list/get/render/backup` (and `pull.py`) ignore
+`RM_ALLOWED_PREFIX` and see the whole account by design. The `remarkable`
+wrapper sets `RM_ALLOWED_PREFIX=ALL` when unset, so interactive use is
+unaffected; calling `send.py` directly requires the variable (see **Sending**).
+
 ## Configuration
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `RM_PAGE_SIZE` | `100mm 178mm` (Paper Pro Move, 7.3″) | PDF page geometry. Try `157mm 210mm` (rM/rM2) or `179mm 239mm` (Paper Pro). |
 | `CHROME_BIN` | auto-detected | Path to Chrome/Chromium, if not found automatically. |
+| `RM_ALLOWED_PREFIX` | *unset → writes refused* | Write confinement (see **MCP → Write confinement**). `ALL` = full access, `/Folder` = confined. The `remarkable` wrapper defaults it to `ALL`. |
 
 ## Good to know
 

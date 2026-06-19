@@ -54,6 +54,68 @@ $PY $S/pull.py backup [ZIELDIR]                # ALLES rekursiv sichern
 $PY $S/pull.py render "Notizbuch" -o note.pdf  # Notizbuch → PDF (Handschrift als Bild)
 ```
 
+## Maschinenlesbar — `--json` (für Agenten & Cron)
+
+Jedes Kommando (`send.py`, `pull.py list/get/backup/render`) akzeptiert `--json`.
+Dann ist **stdout genau EIN JSON-Objekt**, alle Fortschritts-/Diagnosezeilen
+gehen nach **stderr** (auch rmapis eigener Chatter). Ohne `--json` bleibt die
+menschenlesbare Ausgabe exakt wie bisher. Der Exit-Code bleibt zusätzlich gesetzt
+(0 = ok), sodass auch reine Bash-Aufrufer `$?` prüfen können.
+
+```
+$PY $S/pull.py list /HERMES --json
+$PY $S/pull.py render "Schnellnotiz" --json
+$PY $S/send.py notiz.md --dest /HERMES --json
+```
+
+Rückgaben (Kurzform):
+- `send`   → `{ok, uploaded, display_name, dest, doc_type}`
+- `list`   → `{ok, path, entries:[{name, type, path, id, modified, starred}]}`
+- `get`    → `{ok, output_path, bytes}`
+- `backup` → `{ok, output_dir, item_count}`
+- `render` → `{ok, output_path, pages_rendered, pages_skipped, color_note}`
+- Fehler   → `{ok:false, error, …}`. Bei `error:"auth_required"` (+ `hint`-URL)
+  ist das Token abgelaufen → **Alex um den Connect-Code bitten** (Cron/Tom können
+  den interaktiven Flow nicht selbst auslösen), siehe „Authentifizierung".
+
+## MCP (Model Context Protocol)
+
+Das Toolkit spricht zusätzlich **MCP über stdio** (`scripts/mcp_server.py`), damit
+ein MCP-Client (Claude Code, Tom/Hermes) die fünf Tools direkt aufrufen kann:
+`rm_list`, `rm_get`, `rm_render`, `rm_backup` (read-only) und `rm_send` (Schreiben).
+Jedes Tool shellt die CLI mit `--json` und gibt das geprüfte JSON-Objekt zurück.
+
+Für Claude Code auf DIESER (vertrauenswürdigen, lokalen) Maschine liegt eine
+fertige `@@RM_HOME@@/.mcp.json` bereit — sie startet den Server mit
+`RM_ALLOWED_PREFIX=ALL` (Vollzugriff, **bewusst**, weil lokal/Alex) und der
+projekt-lokalen `.rmapi.conf`. Für einen geteilten Agenten (Tom) gilt das
+**Gegenteil**: auf einen Ordner einschränken + eigenes Token — siehe
+`@@RM_HOME@@/docs/mcp-tom.md` (noch nicht scharf, zwei offene Voraussetzungen).
+
+## Schreib-Confinement (fail-closed) — Verhaltensänderung
+
+Jeder **mutierende** Cloud-Pfad (Upload/`mkdir`/`mv`/`rm`) wird über die
+Umgebungsvariable `RM_ALLOWED_PREFIX` geprüft — **fail-closed**:
+
+- **unset / leer** → Schreiben wird **verweigert**.
+- **`ALL`** → unbeschränkt (ganzer Account).
+- **`/Ordner`** → nur AT-OR-BELOW `/Ordner`, alles andere wird abgelehnt.
+
+Der einheitliche Entrypoint `@@RM_HOME@@/bin/remarkable` setzt `RM_ALLOWED_PREFIX`
+auf `ALL`, **wenn die Variable unset ist** — interaktiv bleibt also alles wie
+gewohnt. Wer `send.py` **direkt** aufruft, muss `RM_ALLOWED_PREFIX` selbst setzen:
+
+```
+RM_ALLOWED_PREFIX=ALL $PY $S/send.py datei.pdf
+@@RM_HOME@@/bin/remarkable send datei.pdf      # äquivalent, setzt ALL automatisch
+```
+
+**Wichtig (ehrliche Grenze):** Dieser Guard schützt vor *versehentlichen*
+out-of-prefix-Writes — er ist **keine** gehärtete Security-Grenze (~null
+Adversary-Resistance; Token in `.rmapi.conf`/raw `bin/rmapi` = trotzdem
+Vollzugriff). **Lesen** (`list/get/render/backup`) ist **nicht** confined und
+sieht den ganzen Account.
+
 ## Authentifizierung (falls Token fehlt/abgelaufen)
 
 Das Device-Token liegt in `@@RM_HOME@@/.rmapi.conf`. Fehlt es oder schlägt ein

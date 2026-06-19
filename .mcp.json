@@ -1,0 +1,17 @@
+{
+  "_comment": "TRUSTED-LOCAL case (Alex's own machine). This registers the reMarkable toolkit as a stdio MCP server for Claude Code. RM_ALLOWED_PREFIX=ALL grants FULL write access to the whole reMarkable account on purpose, because this is Alex's interactive box and he is the account owner. Do NOT copy this verbatim for Tom/Hermes or any shared agent: there, set RM_ALLOWED_PREFIX to a confined folder (e.g. /HERMES) and a per-agent RMAPI_CONFIG. See README section 'MCP' and docs/mcp-tom.md.",
+  "_comment_json": "JSON has no comment syntax; these _comment keys are ignored by Claude Code. Keys starting with mcpServers are the only ones it reads.",
+  "_comment_args": "args is cwd-relative; the server resolves its repo ROOT from __file__, so it works regardless of launch cwd. If the server ever fails to start, switch args to the absolute path /Users/alex/Documents/Projects/reMarkable/scripts/mcp_server.py.",
+  "mcpServers": {
+    "remarkable": {
+      "command": "/Users/alex/Documents/Projects/reMarkable/.venv/bin/python",
+      "args": [
+        "scripts/mcp_server.py"
+      ],
+      "env": {
+        "RM_ALLOWED_PREFIX": "ALL",
+        "RMAPI_CONFIG": "/Users/alex/Documents/Projects/reMarkable/.rmapi.conf"
+      }
+    }
+  }
+}

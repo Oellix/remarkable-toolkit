@@ -3,7 +3,15 @@
 
 # Werkzeuge / generierte Artefakte
 .venv/
+# bin/: gevendorte/generierte Engines ausschließen, ABER den handgeschriebenen
+# CLI-Shim bin/remarkable VERSIONIEREN. Ein '!bin/remarkable'-Re-Include
+# funktioniert NICHT, wenn 'bin/' komplett ignoriert ist (git steigt nicht in
+# ignorierte Verzeichnisse ab) — daher die Engines EINZELN ignorieren.
+# renderer-src/ (GPL-3.0) bleibt bis zur Lizenz-Hygiene (OEL-215) ungetrackt.
 bin/rmapi
+bin/rm-render.cjs
+bin/renderer-src/
+bin/*.sha256
 .validation/
 backup/
 *.rmdoc

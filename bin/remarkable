@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# remarkable — einheitlicher CLI-Entrypoint für das reMarkable-Toolkit.
+#
+#   remarkable send <datei|url> [--name X] [--dest /Ordner] [--json]
+#   remarkable list [PFAD] [--json]
+#   remarkable get  <name> [-o DIR] [--json]
+#   remarkable render <name> [-o PDF] [--json]
+#   remarkable backup [DIR] [--json]
+#
+# 'send' geht auf scripts/send.py (Verb wird KONSUMIERT, send.py kennt kein
+# Unterkommando). list/get/render/backup gehen auf scripts/pull.py, wobei das
+# Verb DURCHGEREICHT wird (pull.py erwartet es als Subcommand).
+#
+# CONFINEMENT-POLICY (interaktiv): Dieser Shim ist Alex' bequeme CLI. Damit der
+# fail-closed Schreib-Guard hier NICHT im Weg steht, wird RM_ALLOWED_PREFIX auf
+# 'ALL' gesetzt — ABER NUR, wenn die Variable komplett UNSET ist. Ein bereits
+# (auch leer) gesetztes RM_ALLOWED_PREFIX wird RESPEKTIERT: '${VAR=ALL}' (ohne
+# Doppelpunkt) überschreibt einen leeren Wert NICHT, sodass eine bewusst
+# eingeschränkte oder leere (=fail-closed) Umgebung erhalten bleibt.
+# Der MCP-Server (scripts/mcp_server.py) macht das ABSICHTLICH NICHT — Agenten
+# laufen dort unter dem Prefix, den Tom/Hermes setzt (fail-closed by default).
+set -euo pipefail
+
+# Repo-Wurzel aus dem eigenen Skript-Pfad ableiten (überlebt einen Move),
+# Symlinks auflösen.
+SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SOURCE" ]; do
+  DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+  SOURCE="$(readlink "$SOURCE")"
+  [[ "$SOURCE" != /* ]] && SOURCE="$DIR/$SOURCE"
+done
+BIN_DIR="$(cd -P "$(dirname "$SOURCE")" && pwd)"
+ROOT="$(cd -P "$BIN_DIR/.." && pwd)"
+
+PYTHON="$ROOT/.venv/bin/python"
+SEND="$ROOT/scripts/send.py"
+PULL="$ROOT/scripts/pull.py"
+
+# Vollzugriff NUR wenn unset; leeres/gesetztes RM_ALLOWED_PREFIX bleibt erhalten.
+export RM_ALLOWED_PREFIX="${RM_ALLOWED_PREFIX=ALL}"
+
+usage() {
+  cat >&2 <<'EOF'
+Usage: remarkable <send|list|get|render|backup> [args ...]
+
+  send   <datei|url> [--name X] [--dest /Ordner] [--json]
+  list   [PFAD] [--json]
+  get    <name> [-o DIR] [--json]
+  render <name> [-o PDF] [--json]
+  backup [DIR] [--json]
+EOF
+  exit 2
+}
+
+[ $# -ge 1 ] || usage
+verb="$1"; shift
+
+case "$verb" in
+  send)
+    exec "$PYTHON" "$SEND" "$@"
+    ;;
+  list|get|render|backup)
+    exec "$PYTHON" "$PULL" "$verb" "$@"
+    ;;
+  -h|--help|help)
+    usage
+    ;;
+  *)
+    echo "remarkable: unbekanntes Kommando '$verb'" >&2
+    usage
+    ;;
+esac
